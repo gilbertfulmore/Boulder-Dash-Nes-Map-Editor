@@ -1176,6 +1176,7 @@
   // ==========================================
   let simRunning = false;
   let simGrid = [];
+  let simFalling = [];
   let playerX = 3;
   let playerY = 2;
   let diamondsCollected = 0;
@@ -1204,6 +1205,7 @@
   function initSimulator() {
     stopSimulator();
     simGrid = JSON.parse(JSON.stringify(currentLevel.grid));
+    simFalling = Array.from({ length: ROWS }, () => new Uint8Array(COLS));
     playerX = currentLevel.start_x;
     playerY = currentLevel.start_y;
     diamondsCollected = 0;
@@ -1268,18 +1270,21 @@
     // Empty space (0, 1, or 10 sparkle)
     if (targetTile === 0 || targetTile === 1 || targetTile === 10) {
       simGrid[targetY][targetX] = 0;
+      simFalling[targetY][targetX] = 0;
       playerX = targetX;
       playerY = targetY;
     }
     // Dirt
     else if (targetTile === 2) {
       simGrid[targetY][targetX] = 0;
+      simFalling[targetY][targetX] = 0;
       playerX = targetX;
       playerY = targetY;
     }
     // Diamond (8) or Diamond Sparkle (9)
     else if (targetTile === 8 || targetTile === 9) {
       simGrid[targetY][targetX] = 0;
+      simFalling[targetY][targetX] = 0;
       diamondsCollected++;
       hudGot.textContent = diamondsCollected;
       playerX = targetX;
@@ -1291,11 +1296,13 @@
       }
     }
     // Rock push (Tile 7)
-    else if (targetTile === 7 && dy === 0) {
+    else if (targetTile === 7 && dy === 0 && !simFalling[targetY][targetX]) {
       const rockDestX = targetX + dx;
       if (rockDestX >= 0 && rockDestX < COLS && simGrid[targetY][rockDestX] === 0) {
         simGrid[targetY][rockDestX] = 7;
+        simFalling[targetY][rockDestX] = 0;
         simGrid[targetY][targetX] = 0;
+        simFalling[targetY][targetX] = 0;
         playerX = targetX;
         playerY = targetY;
       }
@@ -1321,6 +1328,7 @@
           // Steel Wall (3) and Exit Door (4) are indestructible
           if (t !== 3 && t !== 4) {
             simGrid[nr][nc] = resultTile;
+            simFalling[nr][nc] = 0;
           }
           if (playerX === nc && playerY === nr) {
             showToast('💥 BOOM! Caught in an explosion.', false, true);
@@ -1342,63 +1350,110 @@
         // Sparkle transitions: 9 -> 8 (Diamond), 10 -> 0 (Empty Space)
         if (item === 9) {
           simGrid[r][c] = 8;
+          simFalling[r][c] = 0;
           gridChanged = true;
           continue;
         }
         if (item === 10) {
           simGrid[r][c] = 0;
+          simFalling[r][c] = 0;
           gridChanged = true;
           continue;
         }
 
         // Boulders (7) and Diamonds (8)
         if (item === 7 || item === 8) {
+          const wasFalling = simFalling[r][c] === 1;
           const below = simGrid[r + 1][c];
+          const playerBelow = (playerX === c && playerY === r + 1);
 
           // 1. Fall directly down
           if (below === 0 || below === 1) {
-            simGrid[r + 1][c] = item;
-            simGrid[r][c] = 0;
-            gridChanged = true;
-            if (playerX === c && playerY === r + 1) {
-              showToast('💥 SQUASHED! A falling rock crushed Rockford.', false, true);
-              stopSimulator();
+            if (playerBelow) {
+              // Stationary boulders/diamonds stay held up while player stands directly below;
+              // only already-falling boulders/diamonds crush the player on impact.
+              if (wasFalling) {
+                simGrid[r + 1][c] = item;
+                simFalling[r + 1][c] = 1;
+                simGrid[r][c] = 0;
+                simFalling[r][c] = 0;
+                gridChanged = true;
+                showToast('💥 SQUASHED! A falling rock crushed Rockford.', false, true);
+                stopSimulator();
+              } else {
+                simFalling[r][c] = 0;
+              }
+            } else {
+              simGrid[r + 1][c] = item;
+              simFalling[r + 1][c] = 1;
+              simGrid[r][c] = 0;
+              simFalling[r][c] = 0;
+              gridChanged = true;
             }
           }
           // 2. Magic Wall (Tile 6) converts falling Boulders (7) into Diamonds (8)
           else if (item === 7 && below === 6) {
             simGrid[r][c] = 0;
+            simFalling[r][c] = 0;
             if (r + 2 < ROWS && simGrid[r + 2][c] === 0) {
               simGrid[r + 2][c] = 8;
+              simFalling[r + 2][c] = 1;
+              if (playerX === c && playerY === r + 2) {
+                showToast('💥 SQUASHED! A falling rock crushed Rockford.', false, true);
+                stopSimulator();
+              }
             }
             gridChanged = true;
           }
           // 3. Crush Firefly (Tile 11) -> 3x3 Space Explosion (Tile 10)
           else if (below === 11) {
             simGrid[r][c] = 0;
+            simFalling[r][c] = 0;
             triggerExplosion3x3(r + 1, c, 10);
             gridChanged = true;
           }
           // 4. Crush Butterfly (Tile 12) -> 3x3 Diamond Explosion (Tile 9 -> 8)
           else if (below === 12) {
             simGrid[r][c] = 0;
+            simFalling[r][c] = 0;
             triggerExplosion3x3(r + 1, c, 9);
             gridChanged = true;
           }
-          // 5. Roll off rounded objects
-          else if (below === 7 || below === 8 || below === 5 || below === 6) {
+          // 5. Roll off rounded objects (only if supporting object is not currently falling)
+          else if ((below === 7 || below === 8 || below === 5 || below === 6) && !simFalling[r + 1][c]) {
+            const canRollLeft = (
+              c > 0 &&
+              simGrid[r][c - 1] === 0 &&
+              simGrid[r + 1][c - 1] === 0 &&
+              !(playerX === c - 1 && (playerY === r || playerY === r + 1))
+            );
+            const canRollRight = (
+              c < COLS - 1 &&
+              simGrid[r][c + 1] === 0 &&
+              simGrid[r + 1][c + 1] === 0 &&
+              !(playerX === c + 1 && (playerY === r || playerY === r + 1))
+            );
+
             // Roll Left
-            if (c > 0 && simGrid[r][c - 1] === 0 && simGrid[r + 1][c - 1] === 0) {
+            if (canRollLeft) {
               simGrid[r + 1][c - 1] = item;
+              simFalling[r + 1][c - 1] = 1;
               simGrid[r][c] = 0;
+              simFalling[r][c] = 0;
               gridChanged = true;
             }
             // Roll Right
-            else if (c < COLS - 1 && simGrid[r][c + 1] === 0 && simGrid[r + 1][c + 1] === 0) {
+            else if (canRollRight) {
               simGrid[r + 1][c + 1] = item;
+              simFalling[r + 1][c + 1] = 1;
               simGrid[r][c] = 0;
+              simFalling[r][c] = 0;
               gridChanged = true;
+            } else {
+              simFalling[r][c] = 0;
             }
+          } else {
+            simFalling[r][c] = 0;
           }
         }
       }
