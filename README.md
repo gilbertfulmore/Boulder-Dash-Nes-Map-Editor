@@ -2,7 +2,62 @@
 
 A full-featured, interactive map editor and physics simulator for the NES edition of **Boulder Dash** (`Boulder Dash (USA) [!].nes`).
 
-![World 1-1 Preview](level_1_1.png)
+![World 1-1 Preview](web/preview.png)
+
+---
+
+## Project Structure
+
+```text
+Boulder Dash Map Editor/
+├── README.md
+├── start_server.sh              # Start script for Server Mode (launches backend + opens browser)
+├── start_offline.sh             # Start script for Standalone Non-Server Mode (opens web/index.html)
+├── app/                         # Backend program logic & ROM utilities
+│   ├── server.py                # HTTP backend server & ROM save/export API
+│   ├── boulder_rom.py           # NES ROM parser, validator & binary patcher
+│   ├── generate_tileset_json.py # Extracts authentic NES metatiles, palettes & sprites
+│   ├── make_rom_data_js.py      # Bundles ROM-free level metadata & tile library into web/rom_data.js
+│   └── test_suite.py            # Automated verification test suite
+├── data/                        # Extracted level metadata & tile library (no .nes ROM included in Git)
+│   ├── levels_dump.json
+│   └── tiles_library.json
+└── web/                         # Frontend UI & standalone bundle
+    ├── index.html
+    ├── style.css
+    ├── editor.js
+    ├── rom_data.js
+    └── preview.png
+```
+
+> **Note (Bring Your Own ROM):** No copyrighted `.nes` game ROM binary is included in this repository. The editor and in-browser playtest simulator run out-of-the-box using the level metadata (`data/levels_dump.json` / `web/rom_data.js`). To export a playable `.nes` file, click **📂 Load ROM** (or **⬇️ Export ROM**) in the top toolbar and select your own `Boulder Dash (USA).nes` ROM file.
+
+---
+
+## Quick Start
+
+### Option 1: Server Mode
+
+Run the server launcher from the project root:
+```bash
+./start_server.sh
+```
+*(Or run `python3 app/server.py` and open `http://localhost:8080` in your browser.)*
+
+- Edit any level and test immediately with the in-browser **Playtest** simulator.
+- Click **📂 Load ROM** to load your `Boulder Dash.nes` ROM (or place `Boulder Dash.nes` inside `data/`, which is ignored by Git).
+- Click **💾 Save ROM** (`Ctrl+S`) to save your edits, and **⬇️ Export ROM** to download a patched `Boulder Dash (Edited).nes` file.
+
+### Option 2: Non-Server / Standalone Offline Mode
+
+Run the offline launcher from the project root:
+```bash
+./start_offline.sh
+```
+*(Or simply double-click [`web/index.html`](web/index.html) in Finder to open it in any browser.)*
+
+- Cave layouts and tile graphics are pre-bundled in [`web/rom_data.js`](web/rom_data.js), so the editor and playtest simulator work 100% offline without a server.
+- When ready to export a playable game, click **📂 Load ROM** or **⬇️ Export ROM** and select your local `Boulder Dash.nes` ROM to patch and download `Boulder Dash (Edited).nes`.
 
 ---
 
@@ -35,30 +90,6 @@ A full-featured, interactive map editor and physics simulator for the NES editio
   - Hit **Space** or click **Playtest** to launch the cave simulator.
   - Move Rockford with **Arrow Keys** or **WASD**.
   - Dig dirt, push boulders, collect diamonds, trigger falling rock physics, crush fireflies/butterflies, drop boulders through magic walls, and watch the disguised Exit Door wall transform into a Portal once your diamond quota is met!
-- **Zero-Dependency Dual Mode:**
-  - Runs with a lightweight Python backend (`python3 server.py`) saving directly to `Boulder Dash.nes`.
-  - Also works 100% offline as a standalone single-page application ([`web/index.html`](web/index.html)) with in-browser `.nes` export.
-
----
-
-## Quick Start
-
-### Option 1: Web Server Mode (Recommended)
-
-1. Launch the server from terminal:
-   ```bash
-   python3 server.py
-   ```
-2. Open your browser to:
-   ```
-   http://localhost:8080
-   ```
-3. Edit any level, test with the in-browser simulator, and click **Save ROM** (`Ctrl+S`) to commit directly to `Boulder Dash.nes` (an automatic backup `Boulder Dash.nes.original.bak` is preserved).
-4. Click **Export ROM** to download a patched `.nes` copy.
-
-### Option 2: Standalone Offline Mode
-
-Simply double-click or open [`web/index.html`](web/index.html) in any modern web browser (Chrome, Safari, Firefox, Edge). All ROM graphics and data are embedded.
 
 ---
 

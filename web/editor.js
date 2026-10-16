@@ -11,7 +11,9 @@
   const ROM_SIZE = 65552;
 
   // App State
-  let romBuffer = null; // Uint8Array(65552)
+  let romBuffer = null; // Uint8Array(65552) - populated when user loads a .nes ROM
+  let originalRomBuffer = null; // Backup copy of user-loaded .nes ROM
+  let pendingExportAfterLoad = false; // If true, auto-export right after user selects a .nes file
   let allLevels = [];
   let tilesLibrary = {};
   let currentLevelIdx = 0;
@@ -112,50 +114,72 @@
     applyZoom();
   }
 
+  function updateRomStatusIndicator() {
+    if (romBuffer) {
+      saveStatus.textContent = 'ROM: Loaded & Ready';
+      saveStatus.style.color = '#55ff55';
+    } else {
+      saveStatus.textContent = 'ROM: Not Loaded (Use 📂 Load ROM to Export)';
+      saveStatus.style.color = '#38bdf8';
+    }
+  }
+
   // Load Data
   async function loadData() {
-    showToast('Loading Boulder Dash ROM data...', false);
+    showToast('Loading Boulder Dash Cave Data...', false);
 
-    // 1. Check if bundled data is available
-    if (window.DEFAULT_ROM_BASE64 && window.DEFAULT_LEVELS_DUMP && window.DEFAULT_TILES_LIBRARY) {
-      // Decode base64 ROM into Uint8Array
-      const raw = atob(window.DEFAULT_ROM_BASE64);
-      romBuffer = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) {
-        romBuffer[i] = raw.charCodeAt(i);
+    // 1. Try Server API first if served over HTTP/HTTPS
+    if (window.location.protocol.startsWith('http')) {
+      try {
+        const [levelsRes, tilesRes] = await Promise.all([
+          fetch('/api/levels'),
+          fetch('/api/tiles')
+        ]);
+
+        if (levelsRes.ok && tilesRes.ok) {
+          const levelsData = await levelsRes.json();
+          const tilesData = await tilesRes.json();
+
+          allLevels = levelsData.levels;
+          tilesLibrary = tilesData.tiles;
+
+          if (levelsData.has_rom) {
+            try {
+              const romRes = await fetch('/api/rom');
+              if (romRes.ok) {
+                const ab = await romRes.arrayBuffer();
+                romBuffer = new Uint8Array(ab);
+                originalRomBuffer = new Uint8Array(romBuffer);
+              }
+            } catch (e) {}
+          }
+
+          await preloadTileImages();
+          populateLevelSelect();
+          selectLevel(0);
+          updateRomStatusIndicator();
+          showToast(romBuffer ? 'Boulder Dash ROM & Caves ready!' : 'Cave Editor ready! Load your .nes ROM to export.', true);
+          return;
+        }
+      } catch (err) {
+        // Fallback to offline bundled level metadata below
       }
+    }
 
-      allLevels = window.DEFAULT_LEVELS_DUMP.levels;
+    // 2. Standalone / Offline fallback using pre-bundled level metadata & tile library (no ROM binary included)
+    if (window.DEFAULT_LEVELS_DUMP && window.DEFAULT_TILES_LIBRARY) {
+      allLevels = JSON.parse(JSON.stringify(window.DEFAULT_LEVELS_DUMP.levels));
       tilesLibrary = window.DEFAULT_TILES_LIBRARY;
 
       await preloadTileImages();
       populateLevelSelect();
       selectLevel(0);
-      showToast('Boulder Dash ROM ready!', true);
+      updateRomStatusIndicator();
+      showToast('Cave Editor ready! Click "📂 Load ROM" to load your Boulder Dash.nes file.', true);
       return;
     }
 
-    // 2. Fallback to API requests if running in server mode without bundled JS
-    try {
-      const [levelsRes, tilesRes] = await Promise.all([
-        fetch('/api/levels'),
-        fetch('/api/tiles')
-      ]);
-
-      const levelsData = await levelsRes.json();
-      const tilesData = await tilesRes.json();
-
-      allLevels = levelsData.levels;
-      tilesLibrary = tilesData.tiles;
-
-      await preloadTileImages();
-      populateLevelSelect();
-      selectLevel(0);
-      showToast('ROM loaded successfully!', true);
-    } catch (err) {
-      console.error('Failed to load data:', err);
-      showToast('Error loading data.', false, true);
-    }
+    showToast('Error loading editor data.', false, true);
   }
 
   function populateLevelSelect() {
@@ -589,7 +613,7 @@
     updateDiagnostics();
   }
 
-  // Update in-memory ROM buffer
+  // Update in-memory ROM buffer for a single level
   function syncLevelToRomBuffer(level) {
     if (!romBuffer) return;
     const meta = allLevels[level.index];
@@ -603,7 +627,7 @@
     romBuffer[meta.start_x_offset] = Math.max(0, Math.min(39, level.start_x));
     romBuffer[meta.start_y_offset] = Math.max(0, Math.min(21, level.start_y));
     // Password (6 digits at 0x2938 + 8*index + 1)
-    if (level.password && level.password.length === 6) {
+    if (level.password && level.password.length === 6 && /^[0-9]{6}$/.test(level.password)) {
       const pwOff = 0x2938 + 8 * level.index + 1;
       for (let d = 0; d < 6; d++) {
         romBuffer[pwOff + d] = parseInt(level.password[d], 10);
@@ -617,6 +641,115 @@
         const t1 = level.grid[r][c * 2 + 1] & 0x0f;
         romBuffer[lvlOff + r * 20 + c] = t0 | (t1 << 4);
       }
+    }
+  }
+
+  // Sync all 24 levels in allLevels into romBuffer
+  function syncAllLevelsToRomBuffer() {
+    if (!romBuffer) return;
+    if (currentLevel) {
+      allLevels[currentLevelIdx] = JSON.parse(JSON.stringify(currentLevel));
+    }
+    allLevels.forEach(lvl => syncLevelToRomBuffer(lvl));
+  }
+
+  // Parse all 24 levels from a loaded .nes ROM Uint8Array into allLevels
+  function readLevelsFromRomBuffer(buf) {
+    if (!buf) return;
+    allLevels.forEach((meta, idx) => {
+      meta.diamonds_needed = buf[meta.crystal_offset];
+      meta.time_limit = buf[meta.time_offset];
+      meta.start_x = buf[meta.start_x_offset];
+      meta.start_y = buf[meta.start_y_offset];
+
+      const pwOff = 0x2938 + 8 * idx + 1;
+      const rawPw = [];
+      let validDigits = true;
+      for (let d = 0; d < 6; d++) {
+        const digit = buf[pwOff + d];
+        if (digit > 9) validDigits = false;
+        rawPw.push(digit);
+      }
+      meta.password = validDigits ? rawPw.join('') : 'FINAL';
+
+      const lvlOff = meta.level_offset;
+      const grid = [];
+      for (let r = 0; r < ROWS; r++) {
+        const row = [];
+        for (let c = 0; c < 20; c++) {
+          const b = buf[lvlOff + r * 20 + c];
+          row.push(b & 0x0f);
+          row.push((b >> 4) & 0x0f);
+        }
+        grid.push(row);
+      }
+      meta.grid = grid;
+    });
+  }
+
+  function uint8ToBase64(bytes) {
+    let binary = '';
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  }
+
+  async function handleRomFileSelected(file) {
+    if (!file) return;
+    try {
+      const ab = await file.arrayBuffer();
+      const buf = new Uint8Array(ab);
+
+      // Verify iNES header ("NES\x1a")
+      if (buf.length < 32784 || buf[0] !== 0x4E || buf[1] !== 0x45 || buf[2] !== 0x53 || buf[3] !== 0x1A) {
+        showToast('Invalid file: Please select a valid NES ROM (.nes) with an iNES header.', false, true);
+        pendingExportAfterLoad = false;
+        return;
+      }
+
+      romBuffer = new Uint8Array(buf);
+      originalRomBuffer = new Uint8Array(buf);
+
+      const wasPendingExport = pendingExportAfterLoad;
+      pendingExportAfterLoad = false;
+
+      if (wasPendingExport) {
+        // User clicked Export ROM and selected their base Boulder Dash.nes to patch & download
+        syncAllLevelsToRomBuffer();
+        updateRomStatusIndicator();
+
+        // Also upload to local server if running
+        if (window.location.protocol.startsWith('http')) {
+          fetch('/api/upload_rom', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rom_base64: uint8ToBase64(romBuffer), sync_existing_edits: true })
+          }).catch(() => {});
+        }
+
+        triggerRomDownload();
+      } else {
+        // User clicked "Load ROM" — read all 24 caves from the selected ROM
+        readLevelsFromRomBuffer(romBuffer);
+        selectLevel(currentLevelIdx);
+        updateRomStatusIndicator();
+
+        if (window.location.protocol.startsWith('http')) {
+          fetch('/api/upload_rom', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rom_base64: uint8ToBase64(romBuffer), sync_existing_edits: false })
+          }).catch(() => {});
+        }
+
+        showToast(`Loaded "${file.name}" (${buf.length} bytes)!`, true);
+      }
+    } catch (err) {
+      console.error('Error reading ROM file:', err);
+      showToast('Failed to read ROM file.', false, true);
+      pendingExportAfterLoad = false;
     }
   }
 
@@ -650,6 +783,20 @@
 
     document.getElementById('btnUndo').addEventListener('click', undo);
     document.getElementById('btnRedo').addEventListener('click', redo);
+
+    const btnLoadRom = document.getElementById('btnLoadRom');
+    if (btnLoadRom) {
+      btnLoadRom.addEventListener('click', () => {
+        pendingExportAfterLoad = false;
+        fileInput.value = '';
+        fileInput.click();
+      });
+    }
+
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (file) handleRomFileSelected(file);
+    });
 
     document.getElementById('btnSave').addEventListener('click', saveCurrentLevel);
     document.getElementById('btnExport').addEventListener('click', exportRom);
@@ -884,7 +1031,7 @@
     const sy = Math.max(0, Math.min(ROWS - 1, parseInt(propStartY.value, 10) || 0));
     let pw = propPassword.value.trim();
 
-    if (!/^[0-9]{6}$/.test(pw)) {
+    if (!/^[0-9]{6}$/.test(pw) && !(currentLevel.index === 23 && pw === 'FINAL')) {
       showToast('Password must be exactly 6 digits (0-9)', false, true);
       return;
     }
@@ -907,82 +1054,107 @@
     if (!currentLevel) return;
     updateLevelProperties();
 
-    // 1. Sync in-memory ROM buffer
-    syncLevelToRomBuffer(currentLevel);
+    // 1. Sync in-memory level array & ROM buffer
     allLevels[currentLevelIdx] = JSON.parse(JSON.stringify(currentLevel));
+    syncLevelToRomBuffer(currentLevel);
 
     // 2. If running with server, POST to backend
-    try {
-      const res = await fetch('/api/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(currentLevel)
-      });
-      if (res.ok) {
-        saveStatus.textContent = 'ROM: Synchronized';
-        saveStatus.style.color = '#55ff55';
-        showToast('Level saved to ROM file on disk!', true);
-        return;
-      }
-    } catch (e) {
-      // In standalone mode without server, save to localStorage or prompt download
+    if (window.location.protocol.startsWith('http')) {
+      try {
+        const res = await fetch('/api/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(currentLevel)
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.has_rom) {
+            saveStatus.textContent = 'ROM: Synchronized on Disk';
+            saveStatus.style.color = '#55ff55';
+            showToast('Level saved to ROM file on disk!', true);
+          } else {
+            saveStatus.textContent = 'Saved in Session (Load ROM to Export)';
+            saveStatus.style.color = '#38bdf8';
+            showToast('Cave saved in session! Click "📂 Load ROM" or "⬇️ Export ROM" to patch a .nes file.', true);
+          }
+          return;
+        }
+      } catch (e) {}
     }
 
-    saveStatus.textContent = 'ROM: Ready (In-Memory)';
-    saveStatus.style.color = '#55ff55';
-    showToast('Level updated in memory! Click Export ROM to download.', true);
+    if (romBuffer) {
+      saveStatus.textContent = 'ROM: Ready (In-Memory)';
+      saveStatus.style.color = '#55ff55';
+      showToast('Level saved to in-memory ROM! Click Export ROM to download.', true);
+    } else {
+      saveStatus.textContent = 'Saved in Session (Load ROM to Export)';
+      saveStatus.style.color = '#38bdf8';
+      showToast('Cave saved in memory! Click "⬇️ Export ROM" and select your base Boulder Dash.nes file.', true);
+    }
+  }
+
+  function triggerRomDownload() {
+    if (!romBuffer) return;
+    const blob = new Blob([romBuffer], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Boulder Dash (Edited).nes';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('Downloaded Boulder Dash (Edited).nes!', true);
   }
 
   // Export / Download ROM directly
   function exportRom() {
     if (!currentLevel) return;
     updateLevelProperties();
-    syncLevelToRomBuffer(currentLevel);
+    allLevels[currentLevelIdx] = JSON.parse(JSON.stringify(currentLevel));
 
     if (romBuffer) {
-      const blob = new Blob([romBuffer], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'Boulder Dash (Edited).nes';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      showToast('Downloaded Boulder Dash (Edited).nes!', true);
+      syncAllLevelsToRomBuffer();
+      triggerRomDownload();
     } else {
-      window.location.href = '/api/export';
+      pendingExportAfterLoad = true;
+      showToast('Select your base Boulder Dash.nes ROM file to patch & export...', false);
+      fileInput.value = '';
+      fileInput.click();
     }
   }
 
   // Revert ROM to Backup
   async function revertROM() {
-    if (!confirm('Revert ROM to original backup? All edits will be undone.')) return;
-    try {
-      const res = await fetch('/api/revert', { method: 'POST' });
-      if (res.ok) {
-        const data = await res.json();
-        allLevels = data.levels;
-        selectLevel(currentLevelIdx);
-        saveStatus.textContent = 'ROM: Reverted to Original';
-        saveStatus.style.color = '#55ff55';
-        showToast('Reverted to original ROM backup!', true);
-        return;
-      }
-    } catch (e) {}
+    if (!confirm('Revert all caves to original backup? All edits will be undone.')) return;
 
-    // Fallback in standalone
-    if (window.DEFAULT_ROM_BASE64) {
-      const raw = atob(window.DEFAULT_ROM_BASE64);
-      for (let i = 0; i < raw.length; i++) {
-        romBuffer[i] = raw.charCodeAt(i);
-      }
-      allLevels = JSON.parse(JSON.stringify(window.DEFAULT_LEVELS_DUMP.levels));
-      selectLevel(currentLevelIdx);
-      saveStatus.textContent = 'ROM: Reverted to Original';
-      saveStatus.style.color = '#55ff55';
-      showToast('Reverted to original ROM backup!', true);
+    if (window.location.protocol.startsWith('http')) {
+      try {
+        const res = await fetch('/api/revert', { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          allLevels = data.levels;
+          if (originalRomBuffer) {
+            romBuffer = new Uint8Array(originalRomBuffer);
+          }
+          selectLevel(currentLevelIdx);
+          updateRomStatusIndicator();
+          showToast('Reverted to original caves!', true);
+          return;
+        }
+      } catch (e) {}
     }
+
+    // Fallback in standalone / offline mode
+    if (originalRomBuffer) {
+      romBuffer = new Uint8Array(originalRomBuffer);
+      readLevelsFromRomBuffer(romBuffer);
+    } else if (window.DEFAULT_LEVELS_DUMP) {
+      allLevels = JSON.parse(JSON.stringify(window.DEFAULT_LEVELS_DUMP.levels));
+    }
+    selectLevel(currentLevelIdx);
+    updateRomStatusIndicator();
+    showToast('Reverted to original caves!', true);
   }
 
   // Toast Helper
