@@ -1,8 +1,12 @@
 # Boulder Dash NES Map Editor
+#
+# -NOTICE-
+# Built entirely with Google Gemini Pro 3.1 & 4 Argon via Google Antigravity
+# Use ai generated code in sandbox environment
 
 A full-featured, interactive map editor and physics simulator for the NES edition of **Boulder Dash** (`Boulder Dash (USA) [!].nes`).
 
-![World 1-1 Preview](web/preview.png)
+Rom Version SHA-256 86bb5b51a9962dbe94b6b92658a28edfad8ea6d3e19e2787c956dd759d931073
 
 ---
 
