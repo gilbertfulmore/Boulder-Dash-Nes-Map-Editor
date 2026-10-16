@@ -3,6 +3,7 @@
 # -NOTICE-
 # Built entirely with Google Gemini Pro 3.1 & 4 Argon via Google Antigravity
 # Use ai generated code in sandbox environment
+# Built on OSx M5, Not tested on Windows or Linux but should work
 
 A full-featured, interactive map editor and physics simulator for the NES edition of **Boulder Dash** (`Boulder Dash (USA) [!].nes`).
 
