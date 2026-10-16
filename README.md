@@ -56,9 +56,8 @@ Run the server launcher from the project root:
 
 Run the offline launcher from the project root:
 ```bash
-./start_offline.sh
+./start_no-server.html
 ```
-*(Or simply double-click [`web/index.html`](web/index.html) in Finder to open it in any browser.)*
 
 - Cave layouts and tile graphics are pre-bundled in [`web/rom_data.js`](web/rom_data.js), so the editor and playtest simulator work 100% offline without a server.
 - When ready to export a playable game, click **📂 Load ROM** or **⬇️ Export ROM** and select your local `Boulder Dash.nes` ROM to patch and download `Boulder Dash (Edited).nes`.
